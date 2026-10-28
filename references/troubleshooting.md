@@ -11,7 +11,9 @@ run again.
 ## "libNOM.io.cli was not found"
 
 See `setup.md`. Quickest fix: download the CLI, then
-`set NMS_LIBNOM=C:\path\to\libNOM.io.cli.exe` (or `export` on macOS) and re-run.
+`set NMS_LIBNOM=C:\path\to\libNOM.io.cli.win-x64.exe` (or `export` on macOS) and
+re-run. The release file names carry the platform; the scripts look for those
+names as well as plain `libNOM.io.cli(.exe)`.
 
 ## "expected exactly one planet base of yours named 'X', found 0"
 
@@ -41,6 +43,30 @@ In order of likelihood:
 3. **Not placeable in that context.** The importer warns when a build uses parts
    the catalog marks as not placeable on a planet/corvette. Those are usually
    fine to drop with `--drop-id`.
+
+## "all 12 ship slots are taken"
+
+A `--new-ship` import needs an empty slot. Scrap or sell a ship you do not need in
+game (empty its inventory first), save, quit, run again. Slots are cleared in
+place, so no other ship or corvette build is affected.
+
+## "a new corvette is copied from one you already own, and this save has none"
+
+The new ship copies the model and tech of a corvette you own. Get one corvette the
+normal way first; after that every further corvette can be imported.
+
+## "this save has N corvette builds - pick one with --ship-index"
+
+`extract_build.py --corvette` needs to know which ship. The message lists slot
+numbers with ship names; `scan_save.py` shows the same in its ships section.
+
+## The corvette builder will not place landing gear (or thrusters)
+
+Not a blueprint problem if the scan shows the parts learned. The builder appears
+to consume part items from `CorvetteStorageInventory`, and a save that could not
+place landing gear held none (see `save-format.md`, section 10). Either get the
+parts in game, or skip building a placeholder: `import_build.py --new-ship` creates
+the ship directly.
 
 ## The build faces the wrong way
 

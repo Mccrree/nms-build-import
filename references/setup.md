@@ -4,8 +4,11 @@ One-time, ten minutes. Everything after that is running scripts.
 
 ## 1. A PC save
 
-Works with saves written by the PC game: Steam, GOG or Game Pass. Console saves
-(PS, Xbox, Switch) are not accessible, and there is no way around that.
+Works with saves written by the PC game on Steam - that is what every write here
+was verified on - and GOG, which uses the same files and folder (`DefaultUser`
+profile). Game Pass keeps saves elsewhere (`%LOCALAPPDATA%\Packages\HelloGames…`)
+in a different container format, which these scripts neither find nor write.
+Console saves (PS, Xbox, Switch) are not accessible, and there is no way around that.
 
 | Platform | Save folder |
 |---|---|
@@ -37,13 +40,16 @@ library.
 This is what converts a save to JSON and back. Without it nothing here runs.
 
 1. Download the CLI from https://github.com/zencq/libNOM.io/releases - take the
-   `libNOM.io.cli` asset for your OS, not the library.
-2. Unzip it somewhere permanent, e.g. `C:\nms-tools\libNOM\` or `~/nms-tools/libNOM/`.
+   `libNOM.io.cli.<platform>` asset for your OS (`libNOM.io.cli.win-x64.exe` on
+   Windows, ~71 MB, a single executable), not the `.nupkg` library. Release 0.14.2
+   reads and writes Voyagers saves (Version 4740). GitHub shows a sha256 digest for
+   each asset; compare it after downloading.
+2. Put it somewhere permanent, e.g. `C:\nms-tools\libNOM\` or `~/nms-tools/libNOM/`.
 3. Point the scripts at it, either by environment variable or per run:
 
 ```
-setx NMS_LIBNOM "C:\nms-tools\libNOM\libNOM.io.cli.exe"     # Windows, new shells
-export NMS_LIBNOM=~/nms-tools/libNOM/libNOM.io.cli           # macOS/Linux shells
+setx NMS_LIBNOM "C:\nms-tools\libNOM\libNOM.io.cli.win-x64.exe"   # Windows, new shells
+export NMS_LIBNOM=~/nms-tools/libNOM/libNOM.io.cli.macos-arm64     # macOS shells
 ```
 
 The scripts also look in the current folder, `./libNOM/`, `~/nms-tools/`, the

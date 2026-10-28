@@ -14,11 +14,13 @@
 - **提取建筑**：把缓存的基地导出成独立文件。下载来的基地记录不会把基地电脑放在原点，提取时会自动重新对齐，之后可以放到任何一台你自己摆的基地电脑上。
 - **调整**：水平旋转、整体抬升、平移、按半径裁剪、去掉指定零件。旋转是刚性的——零件间距和缩放（缩放藏在 `Up`/`At` 向量长度里）都会校验。
 - **导入**：星球基地或护卫舰，演练 / 写入 / 恢复三种模式，自动解锁建筑用到的零件。
+- **直接新建护卫舰**：不用先在游戏里造一艘占位船，也不用覆盖已有的船——只要有一个空飞船槽位，就能把护卫舰 build 导入成一艘全新的船（已在游戏里验证）。
+- **对比存档**：给存档拍快照、在游戏里做一件事、再拍一次，自动列出游戏改了哪些字段。新功能就是这样摸清楚的，不靠猜。
 - **画图**：生成俯视 + 侧视的 SVG，方便在导入前判断占地、高度和分布。
 
 ## 不能做什么
 
-- 主机存档（PS / Xbox / Switch）。只支持 PC 版：Steam、GOG、Game Pass。
+- 主机存档（PS / Xbox / Switch）和 Game Pass 存档。只支持 PC 版的 Steam（已验证）和 GOG（同一套文件）。Game Pass 的存档放在别处、格式也不同。
 - 改地形。建筑会按原来的高度落地，依山而建的设计放在平地上，下半部分会埋进地里。
 - 空间站内部（`PlayerSpaceBase`）。那是另一套零件和另一种记录类型。
 
@@ -30,7 +32,7 @@
 |---|---|
 | PC 版存档 | Windows：`%APPDATA%\HelloGames\NMS\`；macOS：`~/Library/Application Support/HelloGames/NMS/` |
 | Python 3.10+ | 只用标准库，不用装依赖 |
-| [libNOM.io.cli](https://github.com/zencq/libNOM.io/releases) | 负责存档和 JSON 互转。下载后设置环境变量 `NMS_LIBNOM` 指向可执行文件 |
+| [libNOM.io.cli](https://github.com/zencq/libNOM.io/releases) | 负责存档和 JSON 互转。Windows 下载 `libNOM.io.cli.win-x64.exe`，设置环境变量 `NMS_LIBNOM` 指向它 |
 
 详见 [`references/setup.md`](references/setup.md)。
 
@@ -65,8 +67,18 @@ python scripts/transform_build.py "builds/某基地 - build.json" --rotate 90 --
 python scripts/import_build.py --build builds/adjusted.json --target 你的基地名 --dry-run
 python scripts/import_build.py --build builds/adjusted.json --target 你的基地名 --apply
 
+# 护卫舰：直接新建一艘（需要一个空飞船槽位）
+python scripts/extract_build.py --corvette --ship-index 10 --out builds/
+python scripts/import_build.py --build "builds/GUNDA_01 - build.json" --kind corvette --new-ship --ship-name 新船 --dry-run
+python scripts/import_build.py --build "builds/GUNDA_01 - build.json" --kind corvette --new-ship --ship-name 新船 --apply
+
 # 后悔了
 python scripts/import_build.py --restore "<备份目录>"
+
+# 想弄清楚游戏改了什么：拍快照 -> 游戏里只做一件事并存档退出 -> 再拍 -> 对比
+python scripts/diff_saves.py snapshot before
+python scripts/diff_saves.py snapshot after
+python scripts/diff_saves.py diff before after
 ```
 
 扫描和提取只读副本，游戏开着也能用（存过档即可）；**只有写入要求游戏完全退出**。
@@ -78,6 +90,11 @@ python scripts/import_build.py --restore "<备份目录>"
 - **下载来的基地可能是被截断的。** 上传有上限，三个互不相关的大型基地都正好停在 2997 个零件。你拿到的是服务器给的那份。
 - **偶尔会混进 `U_PARAGON`。** 那是护卫舰的核心零件，在星球上根本不能放，属于游戏留下的残留，导入前用 `--drop-id U_PARAGON` 去掉。
 - **元数据必须拿游戏自己的那份当模板修复**，只改尺寸和时间戳。否则存档位的身份信息（槽位 ID、难度标签）会丢。
+- **护卫舰 = 两条记录。** 飞船本身在 `ShipOwnership` 的某个槽位里，外形是一条 `PlayerShipBase` 记录，靠 `UserData` = 槽位编号对上。按 `UserData` 找，不要按列表位置找。
+- **拆船不会让编号移位。** 12 个槽位是固定的，拆掉的船原地变空，别的船和护卫舰外形都不受影响。
+- **种子就是创建时间。** 护卫舰的种子是创建那一刻的 Unix 时间（十六进制），和外形记录里的 `Owner.TS` 完全相等；外形记录不需要服务器 ID（`RID` 为空）。照这个规律新建的船，游戏能正常显示、召唤、飞行、进编辑器。
+- **游戏里造不出护卫舰，不一定是没解锁。** 起落架图纸都学会了还是放不上——护卫舰零件仓库（`CorvetteStorageInventory`）里没有起落架这件物品。直接用 `--new-ship` 导入就绕开了。
+- **存档对比 99% 是噪音。** 拆一艘船，对比出 21,858 处变化，真正相关的不到十处；地形编辑、发现记录、零件时间戳每次存档都会变。所以对比时一次只做一件事、存完马上退出。游戏不让你做的事（比如造船），就拿几个现成的例子互相比。
 
 更多细节见 [`references/save-format.md`](references/save-format.md)，出问题看 [`references/troubleshooting.md`](references/troubleshooting.md)。
 
@@ -92,12 +109,15 @@ python scripts/import_build.py --restore "<备份目录>"
 A [Claude](https://claude.com/claude-code) skill for No Man's Sky PC saves. It scans a save for builds it has
 cached (other players' bases you visited, your own bases, your corvette), extracts one into a portable
 build file re-centred on its own base computer, lets you rotate / lift / trim it, and imports it onto a
-base computer you placed - learning the parts it uses so nothing stays invisible.
+base computer you placed - learning the parts it uses so nothing stays invisible. A corvette build can
+also become a brand-new ship in a free ship slot, with nothing built in game first (verified in game).
 
 Every write is rehearsed in full first, is preceded by a hash-verified backup of the whole save folder,
-touches only two JSON paths (the target's `Objects` and `KnownProducts`), is read back from disk and
-verified, and can be undone with one command. Requires Python 3.10+ and
-[libNOM.io.cli](https://github.com/zencq/libNOM.io/releases).
+touches only the JSON paths its mode declares (the target's `Objects` and `KnownProducts`; for a new
+ship also that slot, its colour flag and one appended build record), is read back from disk and
+verified, and can be undone with one command. `diff_saves.py` snapshots and diffs saves so new fields
+are learned from what the game writes, not guessed. Steam saves (GOG uses the same files); not Game
+Pass. Requires Python 3.10+ and [libNOM.io.cli](https://github.com/zencq/libNOM.io/releases).
 
 Install: download `nms-build-import.skill` and click **Save skill**, or clone this repo into
 `~/.claude/skills/nms-build-import`.

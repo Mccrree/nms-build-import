@@ -252,7 +252,9 @@ def pick_save_name(profile: Path, explicit: str | None = None) -> str:
 
 
 def find_libnom(explicit: Path | None = None) -> Path:
-    names = ["libNOM.io.cli.exe", "libNOM.io.cli"]
+    # the release assets carry the platform in the name (libNOM.io.cli.win-x64.exe in 0.14.x)
+    names = ["libNOM.io.cli.exe", "libNOM.io.cli", "libNOM.io.cli.win-x64.exe", "libNOM.io.cli.linux-x64",
+             "libNOM.io.cli.macos-arm64", "libNOM.io.cli.macos-x64"]
     candidates: list[Path] = []
     if explicit:
         candidates.append(Path(explicit).expanduser())
@@ -504,6 +506,27 @@ def load_catalog() -> dict[str, Any]:
 
 def strip(object_id: str) -> str:
     return object_id[1:] if object_id.startswith("^") else object_id
+
+
+# --------------------------------------------------------------------------- ships
+
+
+def is_empty_ship_slot(ship: dict[str, Any]) -> bool:
+    """Scrapping a ship clears its slot in place: no model, seed flag false. Slots never shift."""
+    resource = ship.get("Resource") or {}
+    seed = resource.get("Seed") or [False]
+    return not resource.get("Filename") and not seed[0]
+
+
+def is_corvette(ship: dict[str, Any]) -> bool:
+    return "/BIGGS/" in ((ship.get("Resource") or {}).get("Filename") or "")
+
+
+def ship_build_records(player: dict[str, Any]) -> dict[int, int]:
+    """ShipOwnership slot -> position of its PlayerShipBase record. The record's UserData is the
+    slot number, so match on that, never on list position (cached bases come and go around it)."""
+    return {base.get("UserData"): i for i, base in enumerate(player.get("PersistentPlayerBases", []))
+            if base_type(base) == "PlayerShipBase"}
 
 
 # --------------------------------------------------------------------------- misc helpers

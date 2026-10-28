@@ -103,11 +103,15 @@ def main() -> int:
         # other players' builds, everything else belongs to this save's player.
         row["mine"] = not str(row["type"]).startswith("External")
         (report["mine"] if row["mine"] else report["cached"]).append(row)
+    bases = player.get("PersistentPlayerBases", [])
+    records = ns.ship_build_records(player)
     for index, ship in enumerate(player.get("ShipOwnership", [])):
         name = (ship.get("Name") or "").strip()
         resource = (ship.get("Resource") or {}).get("Filename", "")
+        build_parts = len(bases[records[index]].get("Objects") or []) if index in records else None
         report["ships"].append({"index": index, "name": name, "model": resource.split("/")[-1],
-                                "is_primary": player.get("PrimaryShip") == index})
+                                "is_primary": player.get("PrimaryShip") == index,
+                                "empty": ns.is_empty_ship_slot(ship), "corvette_build_parts": build_parts})
 
     print(f"\nsave version {report['save_version']} | playtime {report['playtime']} | known products {report['known_products']}")
     print("\n== your own records ==")
@@ -138,10 +142,15 @@ def main() -> int:
         print(f"  (+{len(small)} cached bases under {args.min_parts} parts)")
     print("\n== ships (corvette import targets) ==")
     for row in report["ships"]:
-        print(f"  [{row['index']}] {row['name'][:24]:<26} {row['model']:<28}{'  <- currently flown' if row['is_primary'] else ''}")
-    corvettes = [r for r in report["mine"] if r["type"] == "PlayerShipBase"]
-    if corvettes:
-        print("  corvette build records:", [(c["index"], c["parts"]) for c in corvettes])
+        if row["empty"]:
+            print(f"  [{row['index']}] (empty slot - import_build.py --new-ship can put a corvette here)")
+            continue
+        build = f"  corvette build {row['corvette_build_parts']} parts" if row["corvette_build_parts"] is not None else ""
+        print(f"  [{row['index']}] {row['name'][:24]:<26} {row['model']:<28}{build}"
+              f"{'  <- currently flown' if row['is_primary'] else ''}")
+    free = sum(1 for r in report["ships"] if r["empty"])
+    print(f"  {free} of {len(report['ships'])} ship slots free"
+          + ("" if free else " - scrap a ship in game before a --new-ship import"))
 
     if args.json:
         args.json.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
