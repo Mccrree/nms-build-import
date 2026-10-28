@@ -10,6 +10,7 @@ changes nothing.
   python import_build.py --build "villa - build.json" --target "My New Base" --dry-run
   python import_build.py --build "villa - build.json" --target "My New Base" --apply
   python import_build.py --build "claw - build.json" --kind corvette --apply
+  python import_build.py --build "claw - build.json" --kind corvette --new-ship --ship-name CLAW --apply
   python import_build.py --restore "~/Documents/NMS-save-backups/nms_import_20260918_000225"
 """
 from __future__ import annotations
@@ -18,6 +19,7 @@ import argparse
 import copy
 import json
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -102,6 +104,66 @@ def locate_target(save: dict[str, Any], kind: str, name: str | None, index: int 
             "objects_before": len(objects), "objects_sha256_before": ns.canonical_sha256(objects)}
 
 
+def plan_new_ship(save: dict[str, Any], ship_name: str, template_slot: int | None, to_slot: int | None,
+                  now: int) -> dict[str, Any]:
+    """A corvette the game never built, in an empty ship slot - verified in game (save Version 4740).
+
+    The ship entry is a copy of a corvette you already own: same model, its installed tech,
+    empty cargo, a new name, and a seed equal to the creation time in Unix seconds (that is what
+    the game itself writes). The build record is a copy of that corvette's PlayerShipBase with
+    UserData pointing at the new slot and Owner.TS = the same creation time.
+    """
+    player = ns.get_player(save)
+    ships = player.get("ShipOwnership")
+    colours = player.get("ShipUsesLegacyColours")
+    if not isinstance(ships, list) or not isinstance(colours, list) or len(colours) != len(ships):
+        raise RuntimeError("ShipOwnership / ShipUsesLegacyColours are missing or do not line up")
+    records = ns.ship_build_records(player)
+    bases = player["PersistentPlayerBases"]
+    # prefer corvettes whose record starts with its ^U_PARAGON core, the layout verified in game
+    owned = sorted((s for s in range(len(ships)) if ns.is_corvette(ships[s]) and s in records),
+                   key=lambda s: ((bases[records[s]].get("Objects") or [{}])[0].get("ObjectID") != "^U_PARAGON", s))
+    if template_slot is None:
+        if not owned:
+            raise RuntimeError("a new corvette is copied from one you already own, and this save has none")
+        template_slot = owned[0]
+    elif template_slot not in owned:
+        raise RuntimeError(f"slot {template_slot} is not a corvette with a build record; corvettes: {owned}")
+    empty = [s for s, ship in enumerate(ships) if ns.is_empty_ship_slot(ship)]
+    if to_slot is None:
+        if not empty:
+            raise RuntimeError(f"all {len(ships)} ship slots are taken. Scrap or sell a ship you do not need in "
+                               f"game (slots stay in place, nothing else moves), save, quit, and run again")
+        to_slot = empty[0]
+    elif to_slot not in empty:
+        raise RuntimeError(f"slot {to_slot} is not empty; empty slots: {empty}")
+    if to_slot in records:
+        raise RuntimeError(f"a ship build record already points at empty slot {to_slot}; refusing to guess")
+    seed = f"0x{now:X}"
+    if any(((s.get("Resource") or {}).get("Seed") or [False, ""])[1:2] == [seed] for s in ships):
+        raise RuntimeError("seed collision with an existing ship - wait a second and run again")
+
+    ownership = copy.deepcopy(ships[template_slot])
+    ownership["Name"] = ship_name
+    ownership["Resource"]["Seed"] = [True, seed]
+    for inventory in ("Inventory", "Inventory_Cargo"):  # tech travels with the copy, cargo does not
+        if isinstance(ownership.get(inventory), dict):
+            ownership[inventory]["Slots"] = []
+    record = copy.deepcopy(player["PersistentPlayerBases"][records[template_slot]])
+    record.pop("Objects", None)  # the build supplies the parts
+    record["UserData"] = to_slot
+    record["Owner"]["TS"] = now
+    record["LastUpdateTimestamp"] = now
+    position = len(player["PersistentPlayerBases"])
+    return {"index": position, "slot": to_slot, "template_slot": template_slot,
+            "template_name": ships[template_slot].get("Name"), "ownership": ownership, "record": record,
+            "colour": colours[template_slot], "seed": seed,
+            "path": f"BaseContext.PlayerStateData.PersistentPlayerBases[{position}] (new)",
+            "name": ship_name, "type": f"new corvette in ship slot {to_slot}",
+            "base_version": record.get("BaseVersion"), "objects_before": 0,
+            "objects_sha256_before": ns.canonical_sha256([])}
+
+
 def plan_unlocks(save: dict[str, Any], ids: set[str], catalog: dict[str, Any], learn: bool) -> list[str]:
     """Parts whose blueprint you have not learned can stay invisible in your own base,
     even though the save holds them - learning them is what makes the build show up."""
@@ -125,6 +187,66 @@ def mutate(save: dict[str, Any], target: dict[str, Any], objects: list[dict[str,
     known.extend(added)
     return result, {"objects_after": len(objects), "known_products_before": before,
                     "known_products_after": len(known), "added_known_products": [ns.strip(a) for a in added]}
+
+
+def mutate_new_ship(save: dict[str, Any], target: dict[str, Any], objects: list[dict[str, Any]],
+                    unlocks: list[str]) -> tuple[dict[str, Any], dict[str, Any]]:
+    result = copy.deepcopy(save)
+    player = ns.get_player(result)
+    player["ShipOwnership"][target["slot"]] = copy.deepcopy(target["ownership"])
+    player["ShipUsesLegacyColours"][target["slot"]] = target["colour"]
+    player["PersistentPlayerBases"].append(dict(copy.deepcopy(target["record"]), Objects=copy.deepcopy(objects)))
+    known = player.setdefault("KnownProducts", [])
+    before = len(known)
+    have = {ns.strip(k) for k in known if isinstance(k, str)}
+    added = [f"^{i}" for i in unlocks if i not in have]
+    known.extend(added)
+    return result, {"objects_after": len(objects), "known_products_before": before,
+                    "known_products_after": len(known), "added_known_products": [ns.strip(a) for a in added],
+                    "new_ship": {"slot": target["slot"], "name": target["name"], "seed": target["seed"],
+                                 "copied_from_slot": target["template_slot"],
+                                 "copied_from_name": target["template_name"]}}
+
+
+def make_new_ship_verifier(target: dict[str, Any], objects: list[dict[str, Any]], added: list[str]):
+    slot = target["slot"]
+    record = dict(target["record"], Objects=objects)
+
+    def verify(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+        before_player, after_player = ns.get_player(before), ns.get_player(after)
+        if after_player["ShipOwnership"][slot] != target["ownership"]:
+            raise RuntimeError("the new ship slot does not match the plan")
+        if after_player["ShipUsesLegacyColours"][slot] != target["colour"]:
+            raise RuntimeError("ShipUsesLegacyColours for the new slot does not match the plan")
+        if after_player["PersistentPlayerBases"][:-1] != before_player["PersistentPlayerBases"]:
+            raise RuntimeError("existing base and ship records changed")
+        if after_player["PersistentPlayerBases"][-1] != record:
+            raise RuntimeError("the new ship build record does not match the plan")
+        old, new = before_player.get("KnownProducts", []), after_player.get("KnownProducts", [])
+        if new[:len(old)] != old or [ns.strip(k) for k in new[len(old):]] != added:
+            raise RuntimeError("KnownProducts changed other than by the planned additions")
+
+        def masked(save: dict[str, Any], appended: bool) -> dict[str, Any]:
+            clone = copy.deepcopy(save)
+            player = ns.get_player(clone)
+            player["ShipOwnership"][slot] = "<edited>"
+            player["ShipUsesLegacyColours"][slot] = "<edited>"
+            player["KnownProducts"] = "<edited>"
+            if appended:
+                player["PersistentPlayerBases"].pop()
+            return clone
+
+        masked_before = masked(before, False)
+        if masked_before != masked(after, True):
+            raise RuntimeError("something outside the allowed paths changed")
+        return {"only_allowed_paths_changed": True,
+                "allowed_paths": [f"BaseContext.PlayerStateData.ShipOwnership[{slot}]",
+                                  f"BaseContext.PlayerStateData.ShipUsesLegacyColours[{slot}]",
+                                  target["path"], "BaseContext.PlayerStateData.KnownProducts"],
+                "objects_equal_build": True, "learned_now": added,
+                "protected_sha256": ns.canonical_sha256(masked_before)}
+
+    return verify
 
 
 def make_verifier(target: dict[str, Any], objects: list[dict[str, Any]], added: list[str]):
@@ -169,6 +291,12 @@ def write_log(path: Path, payload: dict[str, Any]) -> Path:
         f"parts           : {target['objects_before']} -> {mutation['objects_after']}",
         f"known products  : {mutation['known_products_before']} -> {mutation['known_products_after']} "
         f"(+{len(mutation['added_known_products'])})",
+    ]
+    if mutation.get("new_ship"):
+        ship = mutation["new_ship"]
+        lines.append(f"new ship        : slot {ship['slot']} {ship['name']!r}, seed {ship['seed']}, tech copied from "
+                     f"slot {ship['copied_from_slot']} {ship['copied_from_name']!r}")
+    lines += [
         "",
         f"save.hg    sha256 {payload['save_sha256_before']} -> {payload['save_sha256_after']}",
         f"mf_save.hg sha256 {payload['meta_sha256_before']} -> {payload['meta_sha256_after']}",
@@ -193,6 +321,12 @@ def main() -> int:
     parser.add_argument("--kind", choices=["planet", "corvette"], default="planet")
     parser.add_argument("--target", help="name of your own planet base to overwrite")
     parser.add_argument("--ship-index", type=int, help="ShipOwnership index for a corvette import")
+    parser.add_argument("--new-ship", action="store_true",
+                        help="corvette only: create a new ship in an empty slot instead of replacing one")
+    parser.add_argument("--ship-name", help="name for the new ship (default: the build's name)")
+    parser.add_argument("--template-slot", type=int,
+                        help="with --new-ship: the corvette whose model and tech the new ship copies")
+    parser.add_argument("--to-slot", type=int, help="with --new-ship: which empty slot (default: the first)")
     parser.add_argument("--no-learn", action="store_true", help="do not add the build's parts to KnownProducts")
     parser.add_argument("--allow-active", action="store_true", help="allow importing into the ship you are flying")
     parser.add_argument("--expect-save-sha256", help="refuse to run if the save changed since you checked it")
@@ -212,6 +346,8 @@ def main() -> int:
 
     if not args.build or (args.kind == "planet" and not args.target):
         raise SystemExit("--build is required, and --target is required for a planet base import")
+    if args.new_ship and args.kind != "corvette":
+        raise SystemExit("--new-ship needs --kind corvette (a planet base needs a base computer you placed)")
     ns.ensure_game_closed()
     libnom = ns.find_libnom(args.libnom)
     profile = ns.locate_profile(nms_root, args.profile)
@@ -231,20 +367,31 @@ def main() -> int:
         source, flags, hashes = ns.read_copy(libnom, profile, save_name, temp_root, "source")
         if args.expect_save_sha256 and hashes[save_name].upper() != args.expect_save_sha256.upper():
             raise SystemExit(f"save.hg is {hashes[save_name]}, expected {args.expect_save_sha256}; re-scan first")
-        target = locate_target(source, args.kind, args.target, args.ship_index, args.allow_active)
+        if args.new_ship:
+            # every corvette build record is called "Default" by the game, so that is no name
+            ship_name = (args.ship_name or (build.get("Name") if build.get("Name") not in (None, "", "Default") else None)
+                         or args.build.stem.replace(" - build", ""))
+            target = plan_new_ship(source, ship_name, args.template_slot, args.to_slot, int(time.time()))
+        else:
+            target = locate_target(source, args.kind, args.target, args.ship_index, args.allow_active)
         if build.get("BaseVersion") is not None and target["base_version"] != build["BaseVersion"]:
             print(f"warning: build BaseVersion {build['BaseVersion']} vs target {target['base_version']}; "
                   f"parts from an older game build can sit at slightly wrong heights")
         unlocks = plan_unlocks(source, checked["ids"], catalog, not args.no_learn)
-        modified, mutation = mutate(source, target, checked["objects"], unlocks)
-        verify = make_verifier(target, checked["objects"], mutation["added_known_products"])
+        if args.new_ship:
+            modified, mutation = mutate_new_ship(source, target, checked["objects"], unlocks)
+            verify = make_new_ship_verifier(target, checked["objects"], mutation["added_known_products"])
+        else:
+            modified, mutation = mutate(source, target, checked["objects"], unlocks)
+            verify = make_verifier(target, checked["objects"], mutation["added_known_products"])
         verify(source, modified)
         staged = ns.stage(libnom, temp_root, temp_root / "source_copy", save_name, modified)
         summary = {
             "mode": "apply" if args.apply else "dry-run", "save": str(profile / save_name),
             "save_sha256_before": hashes[save_name], "build_file": str(args.build),
             "build_sha256": ns.sha256(args.build), "build_author": build.get("Author"),
-            "target": target, "mutation": mutation, "staged_analyze": staged["staged_analyze"],
+            "target": {k: v for k, v in target.items() if k not in ("ownership", "record")},
+            "mutation": mutation, "staged_analyze": staged["staged_analyze"],
             # verifying the round-tripped save proves the rebuilt file, not just the in-memory edit
             "semantic_verification": verify(source, staged["roundtrip"]),
         }

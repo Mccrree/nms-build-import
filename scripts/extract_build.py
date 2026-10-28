@@ -12,6 +12,7 @@ Two reasons this exists as its own step:
   python extract_build.py --name "WHITE COASTLINE VILLA" --out builds/
   python extract_build.py --index 12 --out builds/ --views
   python extract_build.py --corvette --out builds/      # your ship's build
+  python extract_build.py --corvette --ship-index 10 --out builds/   # one of several corvettes
 """
 from __future__ import annotations
 
@@ -99,6 +100,8 @@ def main() -> int:
     picker.add_argument("--corvette", action="store_true", help="extract the ship build (PlayerShipBase)")
     picker.add_argument("--all", action="store_true",
                         help="extract every cached base of another player (use after a tour; the cache rotates)")
+    parser.add_argument("--ship-index", type=int,
+                        help="with --corvette: ShipOwnership slot of the corvette, as scan_save.py lists it")
     parser.add_argument("--min-parts", type=int, default=100,
                         help="with --all, skip bases smaller than this (default 100)")
     parser.add_argument("--out", type=Path, required=True, help="folder for the build file")
@@ -119,11 +122,23 @@ def main() -> int:
     player = ns.get_player(save)
     bases = player.get("PersistentPlayerBases", [])
 
+    names: dict[int, str] = {}
     if args.corvette:
-        matches = [b for b in bases if ns.base_type(b) == "PlayerShipBase" and b.get("Objects")]
-        if len(matches) != 1:
-            raise SystemExit(f"expected exactly one ship build record, found {len(matches)}")
-        targets = [(matches[0], CORVETTE_ANCHOR)]
+        ships = player.get("ShipOwnership", [])
+        records = {slot: pos for slot, pos in ns.ship_build_records(player).items() if bases[pos].get("Objects")}
+        listing = ", ".join(f"{slot} {(ships[slot].get('Name') if slot < len(ships) else '') or '(unnamed)'}"
+                            for slot in sorted(records))
+        if args.ship_index is not None:
+            if args.ship_index not in records:
+                raise SystemExit(f"no corvette build in ship slot {args.ship_index}; corvettes: {listing}")
+            slot = args.ship_index
+        elif len(records) == 1:
+            slot = next(iter(records))
+        else:
+            raise SystemExit(f"this save has {len(records)} corvette builds - pick one with --ship-index: {listing}")
+        targets = [(bases[records[slot]], CORVETTE_ANCHOR)]
+        # the game names every corvette build record "Default"; the ship's own name is the useful one
+        names[id(targets[0][0])] = (ships[slot].get("Name") or "").strip() or f"corvette slot {slot}"
     elif args.index is not None:
         targets = [(bases[args.index], PLANET_ANCHOR)]
     elif args.all:
@@ -146,7 +161,8 @@ def main() -> int:
     written, skipped = [], []
     for base, anchor_id in targets:
         try:
-            written.append(extract_one(base, anchor_id, args, save_name, profile, known, catalog))
+            written.append(extract_one(base, anchor_id, args, save_name, profile, known, catalog,
+                                       names.get(id(base))))
         except ValueError as error:
             skipped.append((base.get("Name") or "(unnamed)", str(error)))
             if len(targets) == 1:
@@ -158,7 +174,7 @@ def main() -> int:
 
 
 def extract_one(base: dict[str, Any], anchor_id: str, args, save_name: str, profile: Path,
-                known: set[str], catalog: dict[str, Any]) -> Path:
+                known: set[str], catalog: dict[str, Any], name: str | None = None) -> Path:
     objects = base.get("Objects") or []
     if not objects:
         raise ValueError("that record has no parts")
@@ -187,7 +203,7 @@ def extract_one(base: dict[str, Any], anchor_id: str, args, save_name: str, prof
             seen.add(key)
 
     stats = summarise(kept, known, catalog)
-    name = base.get("Name") or ("corvette" if args.corvette else f"base-{id(base) % 10000}")
+    name = name or base.get("Name") or ("corvette" if args.corvette else f"base-{id(base) % 10000}")
     safe = "".join(c for c in name if c.isalnum() or c in " -_()").strip() or "build"
     build = {
         "Name": name,

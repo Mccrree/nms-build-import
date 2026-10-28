@@ -22,7 +22,9 @@ involves. Before touching anything, tell them in their own language:
 **What this can do**
 - Copy any base your save has already downloaded (bases you flew to, visited
   from the Anomaly teleporter, or your own) onto a base computer you place.
-- Copy a corvette build - from your save or from a shared build file.
+- Copy a corvette build - from your save or from a shared build file - either as a
+  brand-new ship in a free ship slot (nothing to build in game first) or over one
+  of your corvettes.
 - Learn the parts the build uses, otherwise some of them stay invisible.
 - Adjust before importing: turn it, raise it, trim outlying pieces, drop junk.
 
@@ -38,8 +40,12 @@ involves. Before touching anything, tell them in their own language:
    save keeps a limited number of other players' bases and rotates them out
    within hours, so extract soon after visiting.
 2. Prepare the destination: for a base, place a base computer where they want
-   the build and give it a distinctive name; for a corvette, switch to a
-   *different* ship first so the target is not the one they are flying.
+   the build and give it a distinctive name. For a corvette as a **new ship**,
+   they need one free ship slot (the game allows 12; scrap or sell one they do
+   not need) and at least one corvette of their own, whose model and tech the
+   new ship copies - they do *not* have to build anything. To overwrite an
+   existing corvette instead, switch to a *different* ship first so the target
+   is not the one they are flying.
 3. Save in game, then **quit to desktop**. Not alt-tab - the game rewrites the
    save on its own schedule and would overwrite the import.
 4. Tell you which build they want.
@@ -62,8 +68,10 @@ These are not ceremony - each one has cost somebody a save at some point:
   including rebuilding the save and verifying it. Read its output before applying.
 - **Every apply makes a full, hash-verified backup first** and prints the undo
   command. Put that command in your report to the player - they will want it.
-- **Only two paths may change**: the target's `Objects`, and `KnownProducts`.
-  The tools verify this by comparing everything else byte for byte; if that check
+- **Only the declared paths may change**: for a base or an existing corvette, the
+  target's `Objects` and `KnownProducts`; for a new ship, also that one ship slot,
+  its entry in `ShipUsesLegacyColours`, and the one appended build record. The
+  tools verify this by comparing everything else byte for byte; if that check
   fails, nothing is written.
 - **Other people's builds are their work.** Fine to enjoy privately; do not
   re-upload someone else's build as your own.
@@ -144,27 +152,48 @@ base is not.
 
 ## Workflow B - corvette
 
-1. The player must be flying a **different** ship, then save and quit. The
-   importer refuses the active ship because the game holds it in memory and
-   would write it back over the import.
+Default to a **new ship**: the player keeps every ship they have and does not
+need to build a placeholder corvette in game (which can be blocked anyway - the
+corvette builder consumes part *items*, see troubleshooting).
 
-2. Get a build file, either from the save itself
-   (`python scripts/extract_build.py --corvette --out builds/`) or from a shared
-   corvette build JSON. A valid corvette build has exactly one `^U_PARAGON` at
-   the origin, first in the list; `extract_build.py` enforces that, and for a
-   downloaded file `import_build.py` checks it before doing anything.
+1. **Scan** and read the ships section: it marks empty slots, which ships have
+   a corvette build, and which one is being flown.
+   - No empty slot: the player scraps or sells a ship they do not need in game,
+     saves and quits. Slots are cleared in place, nothing else renumbers.
+   - No corvette of their own at all: a new ship cannot be made, because its
+     model and tech are copied from one they own.
 
-3. Import:
+2. **Get a build file**, either from the save
+   (`python scripts/extract_build.py --corvette --ship-index N --out builds/`,
+   N being the ship slot the scan shows - needed whenever there is more than one
+   corvette) or from a shared corvette build JSON. A valid corvette build has
+   exactly one `^U_PARAGON` at the origin, first in the list; `extract_build.py`
+   enforces that, and `import_build.py` checks it before doing anything.
+
+3. **Import as a new ship**:
    ```
-   python scripts/import_build.py --build "builds/claw - build.json" --kind corvette --dry-run
-   python scripts/import_build.py --build "builds/claw - build.json" --kind corvette --apply
+   python scripts/import_build.py --build "builds/claw - build.json" --kind corvette --new-ship --ship-name CLAW --dry-run
+   python scripts/import_build.py --build "builds/claw - build.json" --kind corvette --new-ship --ship-name CLAW --apply
    ```
-   Add `--ship-index N` when the save has several ship build records (the scan
-   prints them). Learning the parts matters here too - unlearned parts can be
-   invisible in your own ship.
+   It fills the first empty slot (`--to-slot` to choose) with a copy of one of
+   the player's corvettes (`--template-slot` to choose; the default prefers a
+   regular corvette record): same model and installed tech, empty cargo, the new
+   name, and a seed that is the creation time - the same thing the game writes.
+   Then it appends a build record pointing at that slot and learns the parts.
+   Tell the player the tech is copied (they get a second set of the template's
+   upgrades) and that cargo is not.
 
-4. In game: load, look at the ship in the corvette editor, fly it. If parts are
-   missing, it is almost always unlearned products - re-run without `--no-learn`.
+   **Or overwrite an existing corvette** - the player must be flying a
+   different ship, because the game holds the active one in memory:
+   ```
+   python scripts/import_build.py --build "builds/claw - build.json" --kind corvette --ship-index N --apply
+   ```
+
+4. In game: open the ship list, summon the ship, look at it in the corvette
+   editor, fly it. If parts are missing, it is almost always unlearned products -
+   re-run without `--no-learn`. A ship that should not exist is removed the
+   normal way, by scrapping it in game; restoring the backup also works but
+   loses any progress made since the import, so say that before suggesting it.
 
 ## Drawings
 
@@ -172,6 +201,25 @@ base is not.
 and an elevation. Worth doing before any import that spreads beyond ~60 m: it is
 the fastest way for the player to see "this needs a hillside" or "this second
 building is 240 m away". Send the SVG to the player; it opens in any browser.
+
+## Learning a field the tools do not handle yet
+
+Do not guess. Let the game write it and diff:
+```
+python scripts/diff_saves.py snapshot before
+#   player does exactly one thing in game, saves, quits to desktop
+python scripts/diff_saves.py snapshot after
+python scripts/diff_saves.py diff before after
+```
+Snapshots are converted copies under `builds/research/`; nothing live is touched.
+Ask the player to change only the one thing and quit straight after saving -
+a raw diff is ~99% noise (terrain edits, discoveries, part timestamps, spawn
+positions), which the report groups and sets aside. If the game cannot be made to
+do the thing (the new-ship case), compare several existing examples of it instead
+(`ShipOwnership` entries of three corvettes showed which fields are per-ship).
+Then rehearse the write, apply it with a backup, and have the player check in game
+before turning it into a tool. `references/save-format.md` records what was found
+this way; add to it.
 
 ## Reporting to the player
 
@@ -190,8 +238,8 @@ the data does not support.
 ## References
 
 - `references/setup.md` - installing libNOM.io.cli, Python, save locations, Steam Cloud
-- `references/save-format.md` - how saves, slots, metadata, base records and part
-  IDs fit together; read before extending these tools to new fields
+- `references/save-format.md` - how saves, slots, metadata, base records, ships
+  and part IDs fit together; read before extending these tools to new fields
 - `references/troubleshooting.md` - the failures that actually happen, and what they mean
 - `assets/part_catalog.json` - part and product IDs used for validation and for
   deciding what can be learned; IDs the game added later are reported, not rejected
