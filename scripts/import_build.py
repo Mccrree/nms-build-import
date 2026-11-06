@@ -339,75 +339,102 @@ def main() -> int:
     args = parser.parse_args()
 
     backup_root = args.backup_root or ns.default_backup_root()
-    nms_root = ns.locate_nms_root(args.save_root)
     if args.restore:
+        nms_root = ns.locate_nms_root(args.save_root)
         print(json.dumps(ns.restore(args.restore, nms_root, backup_root), ensure_ascii=False, indent=2))
         return 0
-
     if not args.build or (args.kind == "planet" and not args.target):
         raise SystemExit("--build is required, and --target is required for a planet base import")
     if args.new_ship and args.kind != "corvette":
         raise SystemExit("--new-ship needs --kind corvette (a planet base needs a base computer you placed)")
+
+    summary = run_import(args.build, apply=args.apply, kind=args.kind, target=args.target,
+                         ship_index=args.ship_index, new_ship=args.new_ship, ship_name=args.ship_name,
+                         template_slot=args.template_slot, to_slot=args.to_slot, learn=not args.no_learn,
+                         allow_active=args.allow_active, expect_save_sha256=args.expect_save_sha256,
+                         save_root=args.save_root, profile=args.profile, save=args.save, libnom=args.libnom,
+                         backup_root=backup_root, log=args.log)
+    for warning in summary["warnings"]:
+        print(warning)
+    print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
+    if not args.apply:
+        print("\nrehearsal only - nothing on disk changed. Re-run with --apply to write it.")
+        return 0
+    print(f"\ndone. Undo with:  python import_build.py --restore \"{summary['backup']}\"")
+    return 0
+
+
+def run_import(build_path: Path, apply: bool, kind: str = "planet", target: str | None = None,
+               ship_index: int | None = None, new_ship: bool = False, ship_name: str | None = None,
+               template_slot: int | None = None, to_slot: int | None = None, learn: bool = True,
+               allow_active: bool = False, expect_save_sha256: str | None = None, save_root: Path | None = None,
+               profile: str | None = None, save: str | None = None, libnom: Path | None = None,
+               backup_root: Path | None = None, log: Path | None = None) -> dict[str, Any]:
+    """Rehearse (apply=False) or perform an import; returns the summary, raises on any refusal.
+
+    The command line above and the desktop app both go through here, so they cannot drift apart.
+    """
+    build_path = Path(build_path)
+    backup_root = backup_root or ns.default_backup_root()
+    nms_root = ns.locate_nms_root(save_root)
     ns.ensure_game_closed()
-    libnom = ns.find_libnom(args.libnom)
-    profile = ns.locate_profile(nms_root, args.profile)
-    save_name = ns.pick_save_name(profile, args.save)
-    build = json.loads(args.build.read_text(encoding="utf-8"))
+    libnom = ns.find_libnom(libnom)
+    profile_dir = ns.locate_profile(nms_root, profile)
+    save_name = ns.pick_save_name(profile_dir, save)
+    build = json.loads(build_path.read_text(encoding="utf-8"))
     catalog = ns.load_catalog()
-    checked = validate_build(build, args.kind, catalog)
+    checked = validate_build(build, kind, catalog)
+    warnings = []
     if checked["unknown_ids"]:
-        print(f"note: {len(checked['unknown_ids'])} part ids are not in the bundled catalog "
-              f"(newer game content is fine): {checked['unknown_ids'][:6]}")
+        warnings.append(f"note: {len(checked['unknown_ids'])} part ids are not in the bundled catalog "
+                        f"(newer game content is fine): {checked['unknown_ids'][:6]}")
     if checked["not_placeable_here"]:
-        print(f"warning: {len(checked['not_placeable_here'])} part kinds are not normally placeable in a "
-              f"{args.kind} build: {checked['not_placeable_here'][:6]} - they may not appear in game")
+        warnings.append(f"warning: {len(checked['not_placeable_here'])} part kinds are not normally placeable in a "
+                        f"{kind} build: {checked['not_placeable_here'][:6]} - they may not appear in game")
 
     with tempfile.TemporaryDirectory(prefix="nms_import_") as raw:
         temp_root = Path(raw)
-        source, flags, hashes = ns.read_copy(libnom, profile, save_name, temp_root, "source")
-        if args.expect_save_sha256 and hashes[save_name].upper() != args.expect_save_sha256.upper():
-            raise SystemExit(f"save.hg is {hashes[save_name]}, expected {args.expect_save_sha256}; re-scan first")
-        if args.new_ship:
+        source, flags, hashes = ns.read_copy(libnom, profile_dir, save_name, temp_root, "source")
+        if expect_save_sha256 and hashes[save_name].upper() != expect_save_sha256.upper():
+            raise RuntimeError(f"{save_name} is {hashes[save_name]}, expected {expect_save_sha256}; "
+                               f"the game wrote the save since it was checked - re-scan first")
+        if new_ship:
             # every corvette build record is called "Default" by the game, so that is no name
-            ship_name = (args.ship_name or (build.get("Name") if build.get("Name") not in (None, "", "Default") else None)
-                         or args.build.stem.replace(" - build", ""))
-            target = plan_new_ship(source, ship_name, args.template_slot, args.to_slot, int(time.time()))
+            ship_name = (ship_name or (build.get("Name") if build.get("Name") not in (None, "", "Default") else None)
+                         or build_path.stem.replace(" - build", ""))
+            planned = plan_new_ship(source, ship_name, template_slot, to_slot, int(time.time()))
         else:
-            target = locate_target(source, args.kind, args.target, args.ship_index, args.allow_active)
-        if build.get("BaseVersion") is not None and target["base_version"] != build["BaseVersion"]:
-            print(f"warning: build BaseVersion {build['BaseVersion']} vs target {target['base_version']}; "
-                  f"parts from an older game build can sit at slightly wrong heights")
-        unlocks = plan_unlocks(source, checked["ids"], catalog, not args.no_learn)
-        if args.new_ship:
-            modified, mutation = mutate_new_ship(source, target, checked["objects"], unlocks)
-            verify = make_new_ship_verifier(target, checked["objects"], mutation["added_known_products"])
+            planned = locate_target(source, kind, target, ship_index, allow_active)
+        if build.get("BaseVersion") is not None and planned["base_version"] != build["BaseVersion"]:
+            warnings.append(f"warning: build BaseVersion {build['BaseVersion']} vs target {planned['base_version']}; "
+                            f"parts from an older game build can sit at slightly wrong heights")
+        unlocks = plan_unlocks(source, checked["ids"], catalog, learn)
+        if new_ship:
+            modified, mutation = mutate_new_ship(source, planned, checked["objects"], unlocks)
+            verify = make_new_ship_verifier(planned, checked["objects"], mutation["added_known_products"])
         else:
-            modified, mutation = mutate(source, target, checked["objects"], unlocks)
-            verify = make_verifier(target, checked["objects"], mutation["added_known_products"])
+            modified, mutation = mutate(source, planned, checked["objects"], unlocks)
+            verify = make_verifier(planned, checked["objects"], mutation["added_known_products"])
         verify(source, modified)
         staged = ns.stage(libnom, temp_root, temp_root / "source_copy", save_name, modified)
         summary = {
-            "mode": "apply" if args.apply else "dry-run", "save": str(profile / save_name),
-            "save_sha256_before": hashes[save_name], "build_file": str(args.build),
-            "build_sha256": ns.sha256(args.build), "build_author": build.get("Author"),
-            "target": {k: v for k, v in target.items() if k not in ("ownership", "record")},
+            "mode": "apply" if apply else "dry-run", "save": str(profile_dir / save_name),
+            "save_sha256_before": hashes[save_name], "build_file": str(build_path),
+            "build_sha256": ns.sha256(build_path), "build_author": build.get("Author"),
+            "target": {k: v for k, v in planned.items() if k not in ("ownership", "record")},
             "mutation": mutation, "staged_analyze": staged["staged_analyze"],
             # verifying the round-tripped save proves the rebuilt file, not just the in-memory edit
             "semantic_verification": verify(source, staged["roundtrip"]),
+            "warnings": warnings,
         }
-        if args.dry_run:
-            print(json.dumps(summary, ensure_ascii=False, indent=2))
-            print("\nrehearsal only - nothing on disk changed. Re-run with --apply to write it.")
-            return 0
-        committed = ns.commit(profile, save_name, staged, nms_root, backup_root,
-                              f"nms_import_{args.kind}", libnom, temp_root, modified, verify, source)
+        if not apply:
+            return summary
+        committed = ns.commit(profile_dir, save_name, staged, nms_root, backup_root,
+                              f"nms_import_{kind}", libnom, temp_root, modified, verify, source)
         summary.update(committed)
-        summary["mode"] = "apply"
-        log_path = args.log or args.build.with_name(args.build.stem.replace(" - build", "") + " - change log.txt")
+        log_path = log or build_path.with_name(build_path.stem.replace(" - build", "") + " - change log.txt")
         summary["change_log"] = str(write_log(log_path, summary))
-    print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
-    print(f"\ndone. Undo with:  python import_build.py --restore \"{summary['backup']}\"")
-    return 0
+    return summary
 
 
 if __name__ == "__main__":

@@ -8,6 +8,21 @@
 
 ---
 
+## 不用 AI 也能用：桌面版
+
+不会用 Claude / Codex 之类的 AI 工具也没关系：下载 Releases 里的 `NMS-Build-Import-<版本>-win64.zip`，解压后双击 `NMS-Build-Import.exe`。
+不用装 Python，存档转换工具 libNOM.io.cli 也已经附带在里面。
+
+- 中文 / English 界面，三页：① 读取存档（提取别人的基地、自己的基地和护卫舰）② 导入（预览、旋转 / 抬高 / 裁剪、演练、写入）③ 备份与恢复。
+- 和 skill 用的是同一套代码：同样只改声明过的位置、写入前完整备份、写完读回检查、出错自动还原。
+- 首次运行 Windows 可能提示“已保护你的电脑”（程序没有代码签名）：点“更多信息” → “仍要运行”。
+- 使用说明见压缩包里的 `README-使用说明.txt`（[app/README-使用说明.txt](app/README-使用说明.txt)）。
+
+自己打包：`pip install pyinstaller`，然后 `python app/build_exe.py --libnom <libNOM.io.cli.win-x64.exe 的路径>`，产物在 `dist/`。
+libNOM.io 采用 GPL-3.0，发布包里附带它的许可证和源码地址（`libNOM/NOTICE.txt`）。
+
+---
+
 ## 能做什么
 
 - **扫描存档**：列出你自己的基地、存档里缓存的别人的基地（可导入的候选）、以及可用的飞船。
@@ -121,6 +136,11 @@ Pass. Requires Python 3.10+ and [libNOM.io.cli](https://github.com/zencq/libNOM.
 
 Install: download `nms-build-import.skill` and click **Save skill**, or clone this repo into
 `~/.claude/skills/nms-build-import`.
+
+**No AI agent?** Download `NMS-Build-Import-<version>-win64.zip` from Releases, unzip, and run
+`NMS-Build-Import.exe` - a Chinese/English desktop app over the same pipeline (scan, extract, preview,
+rotate/raise/trim, rehearse, write with backup, restore). No Python needed; libNOM.io.cli (GPL-3.0) is
+bundled with its licence and source link. Build it yourself with `python app/build_exe.py --libnom <path>`.
 
 Not affiliated with Hello Games. `assets/part_catalog.json` contains only internal part identifiers,
 used to validate a build and decide which blueprints to learn.

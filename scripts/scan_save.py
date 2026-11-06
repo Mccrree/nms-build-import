@@ -60,6 +60,36 @@ def describe(base: dict[str, Any], known: set[str], catalog: dict[str, Any]) -> 
     }
 
 
+def make_report(save: dict[str, Any], flags: dict[str, str], hashes: dict[str, str], profile: Path,
+                save_name: str, catalog: dict[str, Any]) -> dict[str, Any]:
+    """Everything the scan knows about a converted save, as plain data (the GUI shows the same)."""
+    player = ns.get_player(save)
+    known = {ns.strip(k) for k in player.get("KnownProducts", []) if isinstance(k, str)}
+    report: dict[str, Any] = {
+        "profile": str(profile), "save": save_name, "save_sha256": hashes[save_name],
+        "save_version": save.get("Version"), "playtime": save.get("CommonStateData", {}).get("TotalPlayTime"),
+        "known_products": len(player.get("KnownProducts", [])), "analyze": flags,
+        "mine": [], "cached": [], "ships": [],
+    }
+    for index, base in enumerate(player.get("PersistentPlayerBases", [])):
+        row = describe(base, known, catalog)
+        row["index"] = index
+        # record type is the reliable split: External* records are downloaded copies of
+        # other players' builds, everything else belongs to this save's player.
+        row["mine"] = not str(row["type"]).startswith("External")
+        (report["mine"] if row["mine"] else report["cached"]).append(row)
+    bases = player.get("PersistentPlayerBases", [])
+    records = ns.ship_build_records(player)
+    for index, ship in enumerate(player.get("ShipOwnership", [])):
+        name = (ship.get("Name") or "").strip()
+        resource = (ship.get("Resource") or {}).get("Filename", "")
+        build_parts = len(bases[records[index]].get("Objects") or []) if index in records else None
+        report["ships"].append({"index": index, "name": name, "model": resource.split("/")[-1],
+                                "is_primary": player.get("PrimaryShip") == index,
+                                "empty": ns.is_empty_ship_slot(ship), "corvette_build_parts": build_parts})
+    return report
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only scan of a No Man's Sky save")
     parser.add_argument("--save-root", type=Path)
@@ -85,33 +115,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="nms_scan_") as raw:
         temp_root = Path(raw)
         save, flags, hashes = ns.read_copy(libnom, profile, save_name, temp_root, "scan")
-    player = ns.get_player(save)
-    known = {ns.strip(k) for k in player.get("KnownProducts", []) if isinstance(k, str)}
-    catalog = ns.load_catalog()
-    me = profile.name[3:] if profile.name.startswith("st_") else ""
-
-    report: dict[str, Any] = {
-        "profile": str(profile), "save": save_name, "save_sha256": hashes[save_name],
-        "save_version": save.get("Version"), "playtime": save.get("CommonStateData", {}).get("TotalPlayTime"),
-        "known_products": len(player.get("KnownProducts", [])), "analyze": flags,
-        "mine": [], "cached": [], "ships": [],
-    }
-    for index, base in enumerate(player.get("PersistentPlayerBases", [])):
-        row = describe(base, known, catalog)
-        row["index"] = index
-        # record type is the reliable split: External* records are downloaded copies of
-        # other players' builds, everything else belongs to this save's player.
-        row["mine"] = not str(row["type"]).startswith("External")
-        (report["mine"] if row["mine"] else report["cached"]).append(row)
-    bases = player.get("PersistentPlayerBases", [])
-    records = ns.ship_build_records(player)
-    for index, ship in enumerate(player.get("ShipOwnership", [])):
-        name = (ship.get("Name") or "").strip()
-        resource = (ship.get("Resource") or {}).get("Filename", "")
-        build_parts = len(bases[records[index]].get("Objects") or []) if index in records else None
-        report["ships"].append({"index": index, "name": name, "model": resource.split("/")[-1],
-                                "is_primary": player.get("PrimaryShip") == index,
-                                "empty": ns.is_empty_ship_slot(ship), "corvette_build_parts": build_parts})
+    report = make_report(save, flags, hashes, profile, save_name, ns.load_catalog())
 
     print(f"\nsave version {report['save_version']} | playtime {report['playtime']} | known products {report['known_products']}")
     print("\n== your own records ==")

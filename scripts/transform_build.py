@@ -32,6 +32,77 @@ def rotate_xz(vector: list[float], radians: float) -> list[float]:
     return [x * cos + z * sin, y, -x * sin + z * cos]
 
 
+def transform(build: dict[str, Any], rotate: float = 0.0, offset: list[float] | None = None, lift: float = 0.0,
+              trim: float | None = None, drop_ids: list[str] | tuple[str, ...] = (),
+              name: str | None = None) -> dict[str, Any]:
+    """Return a transformed copy of a build; raises ValueError instead of writing anything bad."""
+    build = dict(build)
+    objects: list[dict[str, Any]] = build["Objects"]
+    if not objects:
+        raise ValueError("build has no parts")
+    anchor_id = objects[0]["ObjectID"]
+    if objects[0]["Position"] != [0.0, 0.0, 0.0]:
+        raise ValueError("the first part is not at the origin - extract the build with extract_build.py first")
+
+    result: list[dict[str, Any]] = []
+    kept_indices: list[int] = []
+    dropped = {"id": 0, "trim": 0}
+    radians = math.radians(rotate)
+    dx, dy, dz = (offset or [0.0, 0.0, 0.0])
+    dy += lift
+    drop_ids = {ns.strip(i) for i in drop_ids}
+
+    for index, obj in enumerate(objects):
+        if index and ns.strip(obj["ObjectID"]) in drop_ids:
+            dropped["id"] += 1
+            continue
+        moved = dict(obj)
+        if radians:
+            moved["Position"] = rotate_xz(obj["Position"], radians)
+            moved["Up"] = rotate_xz(obj["Up"], radians)
+            moved["At"] = rotate_xz(obj["At"], radians)
+        if index and (dx or dy or dz):
+            moved["Position"] = [moved["Position"][0] + dx, moved["Position"][1] + dy, moved["Position"][2] + dz]
+        if index and trim is not None and ns.horizontal(moved["Position"]) > trim:
+            dropped["trim"] += 1
+            continue
+        # NMS stores part scale in the length of Up/At, so a transform that changes
+        # either length would silently resize parts. Check each part against itself.
+        for axis in ("Up", "At"):
+            if abs(math.dist(obj[axis], [0, 0, 0]) - math.dist(moved[axis], [0, 0, 0])) > 1e-4:
+                raise ValueError(f"{axis} length changed on part {index} - part scale would be corrupted; aborting")
+        result.append(moved)
+        kept_indices.append(index)
+
+    if result[0]["ObjectID"] != anchor_id or [round(v, 6) for v in result[0]["Position"]] != [0.0, 0.0, 0.0]:
+        raise ValueError("the anchor moved; refusing to write")
+    if radians and not (dx or dy or dz):
+        # a rotation is rigid: the same pairs of parts must stay the same distance apart
+        step = max(1, len(kept_indices) // 200)
+        sample = kept_indices[::step][:200]
+        worst = 0.0
+        for first, second in zip(sample, sample[1:]):
+            worst = max(worst, abs(math.dist(objects[first]["Position"], objects[second]["Position"])
+                                   - math.dist(result[kept_indices.index(first)]["Position"],
+                                               result[kept_indices.index(second)]["Position"])))
+        if worst > 1e-3:
+            raise ValueError(f"rotation changed distances between parts by {worst:.4f} m; aborting")
+
+    changes = []
+    if rotate:
+        changes.append(f"rotated {rotate:g}deg")
+    if dx or dy or dz:
+        changes.append(f"offset {dx:g},{dy:g},{dz:g} m")
+    if trim is not None:
+        changes.append(f"trimmed to {trim:g} m ({dropped['trim']} parts removed)")
+    if drop_ids:
+        changes.append(f"dropped {sorted(drop_ids)} ({dropped['id']} parts)")
+    build["Objects"] = result
+    build["Name"] = name or build.get("Name", "build")
+    build["Transformed"] = "; ".join(changes) or "no change"
+    return build
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Rotate / move / trim a build file")
     parser.add_argument("build", type=Path)
@@ -49,74 +120,16 @@ def main() -> int:
     parser.add_argument("--name", help="name to store in the new build file")
     args = parser.parse_args()
 
-    build = json.loads(args.build.read_text(encoding="utf-8"))
-    objects: list[dict[str, Any]] = build["Objects"]
-    if not objects:
-        raise SystemExit("build has no parts")
-    anchor_id = objects[0]["ObjectID"]
-    if objects[0]["Position"] != [0.0, 0.0, 0.0]:
-        raise SystemExit("the first part is not at the origin - extract the build with extract_build.py first")
-
-    result: list[dict[str, Any]] = []
-    kept_indices: list[int] = []
-    dropped = {"id": 0, "trim": 0}
-    radians = math.radians(args.rotate)
-    dx, dy, dz = (args.offset or [0.0, 0.0, 0.0])
-    dy += args.lift
-    drop_ids = {ns.strip(i) for i in args.drop_id}
-
-    for index, obj in enumerate(objects):
-        if index and ns.strip(obj["ObjectID"]) in drop_ids:
-            dropped["id"] += 1
-            continue
-        moved = dict(obj)
-        if radians:
-            moved["Position"] = rotate_xz(obj["Position"], radians)
-            moved["Up"] = rotate_xz(obj["Up"], radians)
-            moved["At"] = rotate_xz(obj["At"], radians)
-        if index and (dx or dy or dz):
-            moved["Position"] = [moved["Position"][0] + dx, moved["Position"][1] + dy, moved["Position"][2] + dz]
-        if index and args.trim is not None and ns.horizontal(moved["Position"]) > args.trim:
-            dropped["trim"] += 1
-            continue
-        # NMS stores part scale in the length of Up/At, so a transform that changes
-        # either length would silently resize parts. Check each part against itself.
-        for axis in ("Up", "At"):
-            if abs(math.dist(obj[axis], [0, 0, 0]) - math.dist(moved[axis], [0, 0, 0])) > 1e-4:
-                raise SystemExit(f"{axis} length changed on part {index} - part scale would be corrupted; aborting")
-        result.append(moved)
-        kept_indices.append(index)
-
-    if result[0]["ObjectID"] != anchor_id or [round(v, 6) for v in result[0]["Position"]] != [0.0, 0.0, 0.0]:
-        raise SystemExit("the anchor moved; refusing to write")
-    if radians and not (dx or dy or dz):
-        # a rotation is rigid: the same pairs of parts must stay the same distance apart
-        step = max(1, len(kept_indices) // 200)
-        sample = kept_indices[::step][:200]
-        worst = 0.0
-        for first, second in zip(sample, sample[1:]):
-            worst = max(worst, abs(math.dist(objects[first]["Position"], objects[second]["Position"])
-                                   - math.dist(result[kept_indices.index(first)]["Position"],
-                                               result[kept_indices.index(second)]["Position"])))
-        if worst > 1e-3:
-            raise SystemExit(f"rotation changed distances between parts by {worst:.4f} m; aborting")
-
-    changes = []
-    if args.rotate:
-        changes.append(f"rotated {args.rotate:g}deg")
-    if dx or dy or dz:
-        changes.append(f"offset {dx:g},{dy:g},{dz:g} m")
-    if args.trim is not None:
-        changes.append(f"trimmed to {args.trim:g} m ({dropped['trim']} parts removed)")
-    if drop_ids:
-        changes.append(f"dropped {sorted(drop_ids)} ({dropped['id']} parts)")
-    build["Objects"] = result
-    build["Name"] = args.name or build.get("Name", "build")
-    build["Transformed"] = "; ".join(changes) or "no change"
+    source = json.loads(args.build.read_text(encoding="utf-8"))
+    try:
+        build = transform(source, args.rotate, args.offset, args.lift, args.trim, args.drop_id, args.name)
+    except ValueError as error:
+        raise SystemExit(str(error))
+    result = build["Objects"]
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(build, ensure_ascii=False, indent=1), encoding="utf-8")
     heights = [o["Position"][1] for o in result]
-    print(f"{len(objects)} -> {len(result)} parts | {build['Transformed']}")
+    print(f"{len(source['Objects'])} -> {len(result)} parts | {build['Transformed']}")
     print(f"reach {max(ns.horizontal(o['Position']) for o in result):.0f} m, "
           f"height {min(heights):+.0f}..{max(heights):+.0f} m")
     print(f"written: {args.out}  sha256 {ns.sha256(args.out)}")
