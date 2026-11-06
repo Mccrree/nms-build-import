@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 builds/
 *.hg
+build/
+dist/
+*.spec

@@ -21,6 +21,7 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -29,7 +30,10 @@ from typing import Any, Callable
 UINT32_MASK = 0xFFFFFFFF
 XXTEA_DELTA = 0x9E3779B9
 STEAM_META_MAGIC = 0xEEEEEEBE
-SKILL_ROOT = Path(__file__).resolve().parent.parent
+FROZEN = bool(getattr(sys, "frozen", False))  # running as the packaged desktop app
+# packaged: data files are unpacked under sys._MEIPASS, libNOM sits next to the .exe
+SKILL_ROOT = Path(getattr(sys, "_MEIPASS", "")) if FROZEN else Path(__file__).resolve().parent.parent
+APP_DIR = Path(sys.executable).resolve().parent if FROZEN else SKILL_ROOT
 CATALOG_PATH = SKILL_ROOT / "assets" / "part_catalog.json"
 
 
@@ -170,27 +174,35 @@ def meta_summary(meta_path: Path, save_name: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------- locating things
 
 
+# keep libNOM and tasklist from flashing a console window when called from the desktop app
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def run_checked(command: list[str]) -> str:
     done = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          text=True, encoding="utf-8", errors="replace")
+                          stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace",
+                          creationflags=NO_WINDOW)
     if done.returncode != 0:
         raise RuntimeError(f"command failed ({done.returncode}):\n{' '.join(command)}\n{done.stdout}")
     return done.stdout
 
 
-def ensure_game_closed() -> None:
-    """A running game rewrites the save on its own schedule and would overwrite the edit."""
+def game_running() -> bool:
     if platform.system() == "Windows":
         out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq NMS.exe", "/FO", "CSV", "/NH"],
                              check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             text=True, encoding="utf-8", errors="replace").stdout
-        if "NMS.exe" in out:
-            raise RuntimeError("No Man's Sky is running - save and quit to the desktop first")
-    else:
-        out = subprocess.run(["pgrep", "-f", "No Man's Sky"], check=False, stdout=subprocess.PIPE,
-                             text=True, errors="replace").stdout
-        if out.strip():
-            raise RuntimeError("No Man's Sky is running - save and quit first")
+                             stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace",
+                             creationflags=NO_WINDOW).stdout
+        return "NMS.exe" in out
+    out = subprocess.run(["pgrep", "-f", "No Man's Sky"], check=False, stdout=subprocess.PIPE,
+                         text=True, errors="replace").stdout
+    return bool(out.strip())
+
+
+def ensure_game_closed() -> None:
+    """A running game rewrites the save on its own schedule and would overwrite the edit."""
+    if game_running():
+        raise RuntimeError("No Man's Sky is running - save and quit to the desktop first")
 
 
 def locate_nms_root(explicit: Path | None = None) -> Path:
@@ -260,7 +272,7 @@ def find_libnom(explicit: Path | None = None) -> Path:
         candidates.append(Path(explicit).expanduser())
     if os.environ.get("NMS_LIBNOM"):
         candidates.append(Path(os.environ["NMS_LIBNOM"]).expanduser())
-    for base in (Path.cwd(), Path.cwd() / "libNOM", SKILL_ROOT, SKILL_ROOT / "libNOM",
+    for base in (APP_DIR / "libNOM", APP_DIR, Path.cwd(), Path.cwd() / "libNOM", SKILL_ROOT, SKILL_ROOT / "libNOM",
                  Path.home() / "nms-tools", Path.home() / "nms-tools" / "libNOM"):
         candidates.extend(base / name for name in names)
     for name in names:
@@ -386,6 +398,23 @@ def make_backup(nms_root: Path, backup_root: Path, label: str) -> tuple[Path, li
         {"created_local": datetime.now().astimezone().isoformat(), "source": str(nms_root),
          "backup": str(backup_nms), "files": manifest}, ensure_ascii=False, indent=2), encoding="utf-8")
     return backup_dir, manifest
+
+
+def list_backups(backup_root: Path) -> list[dict[str, Any]]:
+    """Backups this toolchain made, newest first (each folder holds NMS/ plus a hash manifest)."""
+    root = Path(backup_root).expanduser()
+    rows = []
+    for folder in root.iterdir() if root.is_dir() else []:
+        manifest = folder / "backup-manifest.json"
+        if not (folder / "NMS").is_dir() or not manifest.is_file():
+            continue
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        rows.append({"path": str(folder), "name": folder.name, "created": data.get("created_local", ""),
+                     "files": len(data.get("files", []))})
+    return sorted(rows, key=lambda row: row["created"], reverse=True)
 
 
 def normalize_backup_nms(path: Path) -> Path:

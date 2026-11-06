@@ -1,0 +1,19 @@
+libNOM.io.cli - bundled third-party program
+
+This folder contains libNOM.io.cli.win-x64.exe, release 0.14.2, unmodified, as published at
+https://github.com/zencq/libNOM.io/releases/tag/0.14.2
+
+  sha256  df81bef41618aaa63c8bbb7010117d21c4dd80803df3f34a561c4de73b92c189
+
+libNOM.io is Copyright (c) zencq and contributors, licensed under the GNU General Public
+License version 3 (LICENSE.txt in this folder). Its complete source code is available at
+https://github.com/zencq/libNOM.io (tag 0.14.2).
+
+NMS Build Import runs it as a separate program to convert save files to JSON and back;
+it is not linked into NMS Build Import, which is licensed separately under the MIT licence.
+
+---
+
+本文件夹里的 libNOM.io.cli.win-x64.exe 是第三方程序 libNOM.io 的 0.14.2 正式版，未经修改，
+来自上面的官方发布页，sha256 如上。libNOM.io 采用 GPL-3.0 许可（见 LICENSE.txt），完整源码见
+https://github.com/zencq/libNOM.io 。本工具只是把它当作独立程序调用，用来转换存档格式。
